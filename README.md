@@ -38,6 +38,7 @@ by anyone. With the following tenets in mind.
 * [Google Congestion Control](https://github.com/pion/interceptor/tree/master/pkg/gcc)
 * [Stats](https://github.com/pion/interceptor/tree/master/pkg/stats) A [webrtc-stats](https://www.w3.org/TR/webrtc-stats/) compliant statistics generation
 * [Interval PLI](https://github.com/pion/interceptor/tree/master/pkg/intervalpli) Generate PLI on a interval. Useful when no decoder is available.
+* [Header Extension ID Mapper](https://github.com/pion/interceptor/tree/master/pkg/extmap) Rewrite RTP header extension IDs between peers that negotiated different mappings.
 * [FlexFec](https://github.com/pion/interceptor/tree/master/pkg/flexfec) – [FlexFEC-03](https://datatracker.ietf.org/doc/html/draft-ietf-payload-flexible-fec-scheme-03) encoder implementation
 
 ### Planned Interceptors
