@@ -39,6 +39,7 @@ by anyone. With the following tenets in mind.
 * [Stats](https://github.com/pion/interceptor/tree/master/pkg/stats) A [webrtc-stats](https://www.w3.org/TR/webrtc-stats/) compliant statistics generation
 * [Interval PLI](https://github.com/pion/interceptor/tree/master/pkg/intervalpli) Generate PLI on a interval. Useful when no decoder is available.
 * [FlexFec](https://github.com/pion/interceptor/tree/master/pkg/flexfec) – [FlexFEC-03](https://datatracker.ietf.org/doc/html/draft-ietf-payload-flexible-fec-scheme-03) encoder implementation
+* [Active Speaker](https://github.com/pion/interceptor/tree/master/pkg/activespeaker) Active speaker detection from the [RFC 6464](https://datatracker.ietf.org/doc/html/rfc6464) audio level header extension
 
 ### Planned Interceptors
 * Bandwidth Estimation
