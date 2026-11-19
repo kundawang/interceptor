@@ -5,6 +5,7 @@ package jitterbuffer
 
 import (
 	"errors"
+	"time"
 
 	"github.com/pion/rtp"
 )
@@ -20,6 +21,7 @@ type node struct {
 	next     *node
 	prev     *node
 	priority uint16
+	arrival  time.Time
 }
 
 var (
@@ -62,9 +64,122 @@ func (q *PriorityQueue) Find(sqNum uint16) (*rtp.Packet, error) {
 	return nil, ErrNotFound
 }
 
+// Arrival returns the recorded arrival time of the packet with the provided
+// sequence number.
+func (q *PriorityQueue) Arrival(sqNum uint16) (time.Time, bool) {
+	for next := q.next; next != nil; next = next.next {
+		if next.priority == sqNum {
+			return next.arrival, true
+		}
+	}
+
+	return time.Time{}, false
+}
+
+// PopOldestArrival removes the packet that arrived earliest. Packets without a
+// recorded arrival carry the zero time, so they count as the oldest. When
+// several packets tie, the one closest to the head of the queue is removed,
+// keeping eviction deterministic. It returns ErrInvalidOperation for an empty
+// queue.
+func (q *PriorityQueue) PopOldestArrival() (*rtp.Packet, error) {
+	if q.next == nil {
+		return nil, ErrInvalidOperation
+	}
+
+	victim := q.next
+	for next := q.next.next; next != nil; next = next.next {
+		if next.arrival.Before(victim.arrival) {
+			victim = next
+		}
+	}
+
+	return q.removeNode(victim)
+}
+
+// IsAfter reports whether sq lies strictly ahead of ref in 16-bit sequence
+// order, treating a forward distance of half the sequence space or more as
+// behind.
+func IsAfter(sq, ref uint16) bool {
+	distance := sq - ref
+
+	return distance != 0 && distance < halfSequenceSpace
+}
+
+// IsBefore reports whether sq lies strictly behind ref in 16-bit sequence
+// order. A distance of exactly half the sequence space is treated as behind.
+func IsBefore(sq, ref uint16) bool {
+	distance := ref - sq
+
+	return distance != 0 && distance < halfSequenceSpace
+}
+
+// ArrivalAtTimestamp returns the recorded arrival time of the first packet
+// (in queue order) carrying the given RTP timestamp.
+func (q *PriorityQueue) ArrivalAtTimestamp(timestamp uint32) (time.Time, bool) {
+	for next := q.next; next != nil; next = next.next {
+		if next.val.Timestamp == timestamp {
+			return next.arrival, true
+		}
+	}
+
+	return time.Time{}, false
+}
+
+// NextFrom returns the sequence number closest ahead of sq (in sequence order,
+// wrapping at 16 bits) that is present in the queue. A packet whose signed
+// distance from sq is negative lies behind sq and is not considered.
+func (q *PriorityQueue) NextFrom(sq uint16) (uint16, bool) {
+	var (
+		found bool
+		best  uint16
+		bestD uint16
+	)
+	for next := q.next; next != nil; next = next.next {
+		distance := next.priority - sq
+		if distance >= halfSequenceSpace {
+			// Lies behind sq.
+			continue
+		}
+		if !found || distance < bestD {
+			found = true
+			best = next.priority
+			bestD = distance
+		}
+	}
+
+	return best, found
+}
+
+// removeNode unlinks and returns the packet held by n.
+func (q *PriorityQueue) removeNode(n *node) (*rtp.Packet, error) {
+	if n.prev != nil {
+		n.prev.next = n.next
+	} else {
+		q.next = n.next
+	}
+	if n.next != nil {
+		n.next.prev = n.prev
+	}
+	n.next = nil
+	n.prev = nil
+	val := n.val
+	n.val = nil
+	q.length--
+
+	return val, nil
+}
+
 // Push will insert a packet in to the queue in order of sequence number.
 func (q *PriorityQueue) Push(val *rtp.Packet, priority uint16) {
+	q.PushArrival(val, priority, time.Time{})
+}
+
+// PushArrival is Push with the packet's arrival time recorded. The arrival is
+// used by adaptive playout to decide when the packet may be emitted and is
+// returned by Arrival.
+func (q *PriorityQueue) PushArrival(val *rtp.Packet, priority uint16, arrival time.Time) {
 	newPq := newNode(val, priority)
+	newPq.arrival = arrival
 
 	// Insert at head: empty list or new node has smallest-or-equal priority.
 	// Using <= ensures equal-priority elements are consistently placed before

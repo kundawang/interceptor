@@ -96,3 +96,62 @@ func TestReceiverBuffersAndPlaysout(t *testing.T) {
 	err = testInterceptor.Close()
 	assert.NoError(t, err)
 }
+
+func TestReceiverBuffersWithAdaptiveDelay(t *testing.T) {
+	clock := newStepClock()
+
+	factory, err := NewInterceptorWithBufferOptions([]Option{
+		WithMinimumPacketCount(1),
+		WithNow(clock.Now),
+		WithAdaptiveDelay(200*time.Millisecond, time.Second),
+	})
+	assert.NoError(t, err)
+
+	testInterceptor, err := factory.NewInterceptor("")
+	assert.NoError(t, err)
+
+	stream := test.NewMockStream(&interceptor.StreamInfo{
+		SSRC:      123456,
+		ClockRate: 90000,
+	}, testInterceptor)
+	defer func() {
+		assert.NoError(t, stream.Close())
+	}()
+
+	const packets = 5
+	for s := range packets {
+		clock.Advance(20 * time.Millisecond)
+		stream.ReceiveRTP(&rtp.Packet{Header: rtp.Header{
+			SequenceNumber: uint16(s),        //nolint:gosec // G115
+			Timestamp:      uint32(s) * 1800, //nolint:gosec // G115
+		}})
+	}
+
+	// The oldest packet has been buffered for at most 80 ms, well inside the
+	// 200 ms target, so nothing may be emitted while the clock stands still.
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-stream.ReadRTP():
+		assert.Fail(t, "packet emitted before the adaptive delay elapsed")
+	default:
+	}
+
+	// Once the target elapses, each incoming packet drains the oldest buffered
+	// one, in sequence order.
+	clock.Advance(200 * time.Millisecond)
+	for s := range packets {
+		stream.ReceiveRTP(&rtp.Packet{Header: rtp.Header{
+			SequenceNumber: uint16(s + packets),      //nolint:gosec // G115
+			Timestamp:      uint32(s+packets) * 1800, //nolint:gosec // G115
+		}})
+
+		select {
+		case read := <-stream.ReadRTP():
+			assert.EqualValues(t, uint16(s), read.Packet.Header.SequenceNumber) //nolint:gosec // G115
+		case <-time.After(time.Second):
+			assert.Failf(t, "packet not emitted", "packet %d was not emitted after the target elapsed", s)
+		}
+	}
+
+	assert.NoError(t, testInterceptor.Close())
+}

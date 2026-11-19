@@ -4,6 +4,7 @@
 package jitterbuffer
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/pion/interceptor"
@@ -13,14 +14,15 @@ import (
 
 // InterceptorFactory is a interceptor.Factory for a GeneratorInterceptor.
 type InterceptorFactory struct {
-	opts []ReceiverInterceptorOption
+	opts       []ReceiverInterceptorOption
+	bufferOpts []Option
 }
 
 // NewInterceptor constructs a new ReceiverInterceptor.
 func (g *InterceptorFactory) NewInterceptor(_ string) (interceptor.Interceptor, error) {
 	receiverInterceptor := &ReceiverInterceptor{
 		close:  make(chan struct{}),
-		buffer: New(),
+		buffer: New(g.bufferOpts...),
 	}
 
 	for _, opt := range g.opts {
@@ -68,14 +70,28 @@ type ReceiverInterceptor struct {
 
 // NewInterceptor returns a new InterceptorFactory.
 func NewInterceptor(opts ...ReceiverInterceptorOption) (*InterceptorFactory, error) {
-	return &InterceptorFactory{opts}, nil
+	return &InterceptorFactory{opts, nil}, nil
+}
+
+// NewInterceptorWithBufferOptions returns a new InterceptorFactory that also
+// applies the provided JitterBuffer options, such as WithAdaptiveDelay, to
+// every JitterBuffer it creates.
+func NewInterceptorWithBufferOptions(
+	bufferOpts []Option, opts ...ReceiverInterceptorOption,
+) (*InterceptorFactory, error) {
+	return &InterceptorFactory{opts: opts, bufferOpts: bufferOpts}, nil
 }
 
 // BindRemoteStream lets you modify any incoming RTP packets. It is called once for per RemoteStream.
 // The returned method will be called once per rtp packet.
 func (i *ReceiverInterceptor) BindRemoteStream(
-	_ *interceptor.StreamInfo, reader interceptor.RTPReader,
+	info *interceptor.StreamInfo, reader interceptor.RTPReader,
 ) interceptor.RTPReader {
+	i.m.Lock()
+	i.buffer.SetClockRate(info.ClockRate)
+	i.buffer.ResetForStream()
+	i.m.Unlock()
+
 	return interceptor.RTPReaderFunc(func(b []byte, a interceptor.Attributes) (int, interceptor.Attributes, error) {
 		buf := make([]byte, len(b))
 		n, attr, err := reader.Read(buf, a)
@@ -89,8 +105,13 @@ func (i *ReceiverInterceptor) BindRemoteStream(
 		i.m.Lock()
 		defer i.m.Unlock()
 		i.buffer.Push(packet)
-		if i.buffer.state == Emitting {
+		if i.buffer.State() == Emitting {
 			newPkt, err := i.buffer.Pop()
+			if errors.Is(err, ErrPopNotReady) {
+				// Buffered but still inside the adaptive playout delay: the
+				// packet is not lost, ask the caller to try again later.
+				return n, attr, ErrPopWhileBuffering
+			}
 			if err != nil {
 				return 0, nil, err
 			}
